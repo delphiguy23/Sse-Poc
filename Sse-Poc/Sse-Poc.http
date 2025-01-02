@@ -1,0 +1,6 @@
+@Sse_Poc_HostAddress = http://localhost:5237
+
+GET {{Sse_Poc_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

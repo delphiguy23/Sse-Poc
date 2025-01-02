@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>SSE Message Consumer - POC</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px; 
+        }
+        #messages, #logs {
+            border: 1px solid #ddd;
+            padding: 10px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .message { margin-bottom: 5px; padding: 5px; background-color: #f4f4f4; }
+        .log { margin-bottom: 5px; font-size: 0.8em; }
+        .log-error { color: red; }
+        .log-info { color: blue; }
+        .log-warn { color: orange; }
+    </style>
+</head>
+<body>
+    <h1>SSE Message Consumer - POC</h1>
+    <div id="status">Connecting...</div>
+    <div>
+        <button id="clearBtn">Clear Logs and Messages</button>
+    </div>
+    <div id="messages"></div>
+    <h3>Logs</h3>
+    <div id="logs"></div>
+
+    <script>
+        // Generate a unique ID for this browser tab
+        const tabId = `tab-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        const messagesContainer = document.getElementById('messages');
+        const statusElement = document.getElementById('status');
+        const logsContainer = document.getElementById('logs');
+        const clearBtn = document.getElementById('clearBtn');
+
+        // Add clear functionality
+        clearBtn.addEventListener('click', () => {
+            messagesContainer.innerHTML = '';
+            logsContainer.innerHTML = '';
+            log('Logs and messages cleared', 'info');
+        });
+
+        function log(message, type = 'info') {
+            const logEntry = document.createElement('div');
+            logEntry.classList.add('log', `log-${type}`);
+            logEntry.textContent = `[${new Date().toISOString()}] ${message}`;
+            logsContainer.insertBefore(logEntry, logsContainer.firstChild);
+            console[type === 'error' ? 'error' : 'log'](message);
+        }
+
+        function recordPulse() {
+            fetch('http://localhost:5237/pulse', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(`${tabId}`)
+            })
+            .then(response => response.json())
+            .then(data => {
+                log(`Pulse recorded with ID: ${data.id}`, 'info');
+            })
+            .catch(error => {
+                log(`Error recording pulse: ${error.message}`, 'error');
+            });
+        }
+
+        function connectSSE() {
+            log('Attempting to connect to SSE stream', 'info');
+
+            // Use relative URL to avoid CORS issues
+            const eventSource = new EventSource('http://localhost:5237/stream/test');
+
+            eventSource.onopen = function() {
+                log('Successfully connected to SSE Stream', 'info');
+                statusElement.textContent = 'Connected to SSE Stream';
+                statusElement.style.color = 'green';
+            };
+
+            eventSource.onmessage = function(event) {
+                try {
+                    log(`Received SSE raw event data: ${event.data}`, 'info');
+
+
+                    // Check if the data looks like valid JSON
+                    let message;
+                    try {
+                        message = JSON.parse(event.data);
+                    } catch (parseError) {
+                        // If not valid JSON, create a fallback message object
+                        message = {
+                            Message: event.data,
+                            Value: null
+                        };
+                        log(`Received non-JSON message, creating fallback: ${event.data}`, 'warn');
+                    }
+                    
+                    log(`Parsed message: ${JSON.stringify(message)}`, 'info');
+
+                    // Record pulse with tab ID
+                    recordPulse();
+
+                    // Create and append message element
+                    const messageDiv = document.createElement('div');
+                    messageDiv.classList.add('message');
+                    messageDiv.innerHTML = `
+                        <strong>Message:</strong> ${message.Message || 'N/A'}<br>
+                        <strong>Value:</strong> ${message.Value || 'N/A'}
+                    `;
+                    
+                    // Insert new messages at the top
+                    messagesContainer.insertBefore(messageDiv, messagesContainer.firstChild);
+                } catch (error) {
+                    log(`Error processing message: ${error.message}`, 'error');
+                    
+                    // Create an error message element
+                    const errorDiv = document.createElement('div');
+                    errorDiv.classList.add('message');
+                    errorDiv.style.color = 'red';
+                    errorDiv.textContent = `Parse Error: ${error.message}. Raw data: ${event.data}`;
+                    messagesContainer.insertBefore(errorDiv, messagesContainer.firstChild);
+                }
+            };
+
+            eventSource.onerror = function(error) {
+                log(`EventSource error: ${JSON.stringify(error)}`, 'error');
+                statusElement.textContent = 'Disconnected. Attempting to reconnect...';
+                statusElement.style.color = 'red';
+
+                // Attempt reconnection after a delay
+                setTimeout(connectSSE, 5000);
+            };
+
+            return eventSource;
+        }
+
+            // Add kill session stream listener
+            function connectKillSessionStream() {
+                const killSessionEventSource = new EventSource('http://localhost:5237/stream/killSession');
+
+                killSessionEventSource.onmessage = function(event) {
+                    // Parse the event data
+                    try {
+                        const eventData = event.data;
+                        
+                        // Check if the event data contains the current tab's ID
+                        if (eventData.includes(tabId)) {
+                            log(`Kill session message matched for this tab: ${eventData}`, 'warn');
+                            
+                            const messageDiv = document.createElement('div');
+                            messageDiv.classList.add('message');
+                            messageDiv.style.backgroundColor = 'red';
+                            messageDiv.style.color = 'white';
+                            messageDiv.textContent = `KILL SESSION (TAB MATCH): ${eventData}`;
+                            
+                            messagesContainer.insertBefore(messageDiv, messagesContainer.firstChild);
+
+                            // Optional: Additional actions for matched kill session
+                            // For example, close the event sources or perform cleanup
+                            eventSource.close();
+                            killSessionEventSource.close();
+                        } else {
+                            log(`Kill session message does not match this tab: ${eventData}`, 'info');
+                        }
+                    } catch (error) {
+                        log(`Error processing kill session message: ${error.message}`, 'error');
+                    }
+                };
+
+                killSessionEventSource.onerror = function(error) {
+                    log(`Kill session stream error: ${JSON.stringify(error)}`, 'error');
+                };
+
+                return killSessionEventSource;
+            }
+
+        // Initial connection
+        const eventSource = connectSSE();
+        const killSessionEventSource = connectKillSessionStream();
+
+        // Optional: Add reconnect button
+        const reconnectBtn = document.createElement('button');
+
+        reconnectBtn.textContent = 'Reconnect';
+        reconnectBtn.onclick = () => {
+            log('reconnecting...', 'info');
+            if (eventSource) {
+                eventSource.close();
+            }
+            connectSSE();
+        };
+        document.body.appendChild(reconnectBtn);
+    </script>
+</body>
+</html>
